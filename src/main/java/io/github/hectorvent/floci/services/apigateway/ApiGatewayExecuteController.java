@@ -2511,6 +2511,43 @@ public class ApiGatewayExecuteController {
     private Response dispatchV2(String httpMethod, String apiId, String stageName,
                                 String proxy, HttpHeaders headers, UriInfo uriInfo,
                                 byte[] body, String region) {
+        Response response = dispatchV2WithoutCors(httpMethod, apiId, stageName, proxy, headers, uriInfo, body, region);
+        return withHttpApiCorsHeaders(response, apiId, headers, region);
+    }
+
+    /**
+     * An HTTP API with a CORS configuration answers every request from an allowed origin with the
+     * CORS headers, not only the preflight. Without them a browser discards the response.
+     */
+    private Response withHttpApiCorsHeaders(Response response, String apiId, HttpHeaders headers, String region) {
+        String origin = headers != null ? headers.getHeaderString("Origin") : null;
+        if (origin == null || response.getHeaders().containsKey("Access-Control-Allow-Origin")) {
+            return response;
+        }
+        Api.Cors cors;
+        try {
+            cors = apiGatewayV2Service.getApi(region, apiId).getCorsConfiguration();
+        } catch (AwsException e) {
+            return response;
+        }
+        String allowOrigin = cors != null ? matchingCorsOrigin(cors.allowOrigins(), origin) : null;
+        if (allowOrigin == null) {
+            return response;
+        }
+        Response.ResponseBuilder builder = Response.fromResponse(response).header("Access-Control-Allow-Origin", allowOrigin);
+        if (!"*".equals(allowOrigin)) {
+            builder.header("Vary", "Origin");
+        }
+        putCorsListHeader(builder, "Access-Control-Expose-Headers", cors.exposeHeaders());
+        if (Boolean.TRUE.equals(cors.allowCredentials())) {
+            builder.header("Access-Control-Allow-Credentials", "true");
+        }
+        return builder.build();
+    }
+
+    private Response dispatchV2WithoutCors(String httpMethod, String apiId, String stageName,
+                                           String proxy, HttpHeaders headers, UriInfo uriInfo,
+                                           byte[] body, String region) {
         // disableExecuteApiEndpoint is enforced here rather than in the caller because both the
         // host-based route (*.execute-api.localhost.*, already rejected by ApiGatewayExecuteApiHostFilter)
         // and the direct /execute-api/{apiId}/{stage}/... route land here. Checking at the single
