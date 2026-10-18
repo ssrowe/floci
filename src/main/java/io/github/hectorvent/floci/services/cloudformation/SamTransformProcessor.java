@@ -1720,6 +1720,33 @@ class SamTransformProcessor {
      * {@code AutoPublishAlias} or {@code UseAliasAsEventTarget}: none appeared in the
      * {@code AWS::Serverless::StateMachine} declarations measured against real AWS.
      */
+    /** An execution role Step Functions can assume, carrying the state machine's managed policies. */
+    private ObjectNode createStateMachineRole(JsonNode policies) {
+        ObjectNode roleDef = objectMapper.createObjectNode();
+        roleDef.put("Type", "AWS::IAM::Role");
+        ObjectNode roleProps = objectMapper.createObjectNode();
+        ObjectNode assumePolicy = objectMapper.createObjectNode();
+        assumePolicy.put("Version", "2012-10-17");
+        ObjectNode stmt = assumePolicy.putArray("Statement").addObject();
+        stmt.put("Effect", "Allow");
+        stmt.putObject("Principal").put("Service", ServicePrincipals.of("states"));
+        stmt.put("Action", "sts:AssumeRole");
+        roleProps.set("AssumeRolePolicyDocument", assumePolicy);
+        ArrayNode managedPolicies = objectMapper.createArrayNode();
+        if (policies.isArray()) {
+            for (JsonNode policy : policies) {
+                if (policy.isTextual()) {
+                    addManagedPolicy(managedPolicies, policy.asText());
+                }
+            }
+        } else if (policies.isTextual()) {
+            addManagedPolicy(managedPolicies, policies.asText());
+        }
+        roleProps.set("ManagedPolicyArns", managedPolicies);
+        roleDef.set("Properties", roleProps);
+        return roleDef;
+    }
+
     private void expandServerlessStateMachine(String logicalId, JsonNode samResource, ObjectNode resources) {
         resources.remove(logicalId);
         JsonNode properties = samResource.path("Properties");
@@ -1743,6 +1770,14 @@ class SamTransformProcessor {
         copyRenamed(properties, "Name", smProps, "StateMachineName");
         copyRenamed(properties, "Type", smProps, "StateMachineType");
         copyRenamed(properties, "Role", smProps, "RoleArn");
+        if (!isPropertyPresent(properties.path("Role"))) {
+            // SAM creates an execution role when a state machine names Policies instead of a Role.
+            String roleLogicalId = uniqueId(logicalId + "Role", resources);
+            resources.set(roleLogicalId, createStateMachineRole(properties.path("Policies")));
+            ObjectNode roleArn = objectMapper.createObjectNode();
+            roleArn.putArray("Fn::GetAtt").add(roleLogicalId).add("Arn");
+            smProps.set("RoleArn", roleArn);
+        }
         copyRenamed(properties, "Logging", smProps, "LoggingConfiguration");
         copyRenamed(properties, "Tracing", smProps, "TracingConfiguration");
         copyIfPresent(properties, "DefinitionSubstitutions", smProps);
