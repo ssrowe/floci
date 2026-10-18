@@ -108,6 +108,9 @@ public class VtlTemplateEngine {
      * @param ctx      the request context
      * @return result containing the rendered body and any {@code $context.responseOverride} assignments
      */
+    private static final java.util.regex.Pattern OVERRIDE_HYPHEN_KEY = java.util.regex.Pattern.compile(
+            "(\\$context\\.(?:request|response)Override\\.(?:header|querystring|path))\\.([A-Za-z0-9_]+(?:-[A-Za-z0-9_]+)+)");
+
     public EvaluateResult evaluate(String template, VtlContext ctx) {
         ResponseOverride override = new ResponseOverride();
         if (template == null || template.isEmpty()) {
@@ -119,6 +122,10 @@ public class VtlTemplateEngine {
         vc.put("util", new UtilVariable(objectMapper));
         vc.put("context", buildContextMap(ctx, override));
         vc.put("stageVariables", ctx.stageVariables() != null ? ctx.stageVariables() : Map.of());
+
+        // API Gateway accepts hyphenated names such as $context.requestOverride.header.X-Amz-Target,
+        // which Velocity reads as subtraction. Rewrite them to the equivalent bracket form.
+        template = OVERRIDE_HYPHEN_KEY.matcher(template).replaceAll("$1[\"$2\"]");
 
         StringWriter rawWriter = new StringWriter();
         BoundedWriter writer = new BoundedWriter(rawWriter, config.services().apigateway().vtlMaxOutputChars());
@@ -156,6 +163,11 @@ public class VtlTemplateEngine {
         }
 
         map.put("responseOverride", responseOverride);
+        Map<String, Object> requestOverride = new HashMap<>();
+        requestOverride.put("header", new HashMap<String, String>());
+        requestOverride.put("querystring", new HashMap<String, String>());
+        requestOverride.put("path", new HashMap<String, String>());
+        map.put("requestOverride", requestOverride);
 
         return map;
     }
