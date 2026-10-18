@@ -1236,6 +1236,13 @@ public class ApiGatewayExecuteController {
             Map<String, String> stageVars = stage != null ? stage.getVariables() : null;
             putStageVariables(node, stageVars);
 
+            // A proxy integration event carries null for an empty query string or stage, a REQUEST
+            // authorizer event carries an empty object. Strict event parsers, such as the Powertools
+            // APIGatewayRequestAuthorizerEventSchema, reject the authorizer event otherwise.
+            emptyObjectForNull(node, "queryStringParameters");
+            emptyObjectForNull(node, "multiValueQueryStringParameters");
+            emptyObjectForNull(node, "stageVariables");
+
             ObjectNode ctx = node.putObject("requestContext");
             ctx.put("accountId", regionResolver.getAccountId());
             ctx.put("apiId", apiId);
@@ -3436,6 +3443,12 @@ public class ApiGatewayExecuteController {
             case 3 -> base64 + "=";
             default -> base64;
         };
+    }
+
+    private static void emptyObjectForNull(ObjectNode event, String field) {
+        if (event.path(field).isNull()) {
+            event.putObject(field);
+        }
     }
 
     private static void putStageVariables(ObjectNode event, Map<String, String> stageVariables) {

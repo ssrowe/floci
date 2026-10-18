@@ -256,8 +256,9 @@ class ApiGatewayRequestAuthorizerIntegrationTest {
         assertFalse(event.path("pathParameters").isNull(), "pathParameters must be non-null");
         assertEquals("42", event.path("pathParameters").path("id").asText(null));
 
-        // stageVariables must be null (no stage variables configured)
-        assertTrue(event.path("stageVariables").isNull(), "stageVariables must be null");
+        // stageVariables is an empty object when the stage has none, as AWS sends it
+        assertTrue(event.path("stageVariables").isObject(), "stageVariables must be an object");
+        assertTrue(event.path("stageVariables").isEmpty(), "stageVariables must be empty");
 
         // requestContext
         JsonNode ctx = event.path("requestContext");
@@ -295,7 +296,7 @@ class ApiGatewayRequestAuthorizerIntegrationTest {
 
     @Test
     @Order(10)
-    void requestAuthorizerNullQueryParamsWhenNonePresent() throws Exception {
+    void requestAuthorizerEmptyQueryParamsWhenNonePresent() throws Exception {
         String response = given()
                 .header("Authorization", "Bearer test")
                 .when().get("/execute-api/" + apiId + "/prod/items/99")
@@ -308,10 +309,12 @@ class ApiGatewayRequestAuthorizerIntegrationTest {
         assertNotNull(receivedEventStr);
 
         JsonNode event = OBJECT_MAPPER.readTree(receivedEventStr);
-        assertTrue(event.path("queryStringParameters").isNull(),
-                "queryStringParameters must be null when no query string is present");
-        assertTrue(event.path("multiValueQueryStringParameters").isNull(),
-                "multiValueQueryStringParameters must be null when no query string is present");
+        assertTrue(event.path("queryStringParameters").isObject()
+                        && event.path("queryStringParameters").isEmpty(),
+                "queryStringParameters must be an empty object when no query string is present");
+        assertTrue(event.path("multiValueQueryStringParameters").isObject()
+                        && event.path("multiValueQueryStringParameters").isEmpty(),
+                "multiValueQueryStringParameters must be an empty object when no query string is present");
     }
 
     @Test
