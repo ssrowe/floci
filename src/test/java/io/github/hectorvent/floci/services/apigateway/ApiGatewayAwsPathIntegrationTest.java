@@ -13,6 +13,7 @@ import java.util.Map;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.Matchers.hasKey;
 import static org.hamcrest.Matchers.notNullValue;
 import static org.hamcrest.Matchers.nullValue;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
@@ -81,7 +82,8 @@ class ApiGatewayAwsPathIntegrationTest {
         receive.set("requestParameters", mapper.valueToTree(Map.of(
                 "integration.request.querystring.Action", "'ReceiveMessage'",
                 "integration.request.querystring.MaxNumberOfMessages", "'1'",
-                "integration.request.querystring.MessageAttributeName.1", "'DestinationId'",
+                "integration.request.querystring.MessageAttributeNames", "'DestinationId'",
+                "integration.request.querystring.AttributeNames", "'SentTimestamp'",
                 "integration.request.querystring.Version", "'2012-11-05'",
                 "integration.request.path.agentid", "method.request.path.agentid")));
         receive.set("requestTemplates", mapper.valueToTree(Map.of("application/json", "")));
@@ -155,6 +157,12 @@ class ApiGatewayAwsPathIntegrationTest {
                         equalTo("DestinationId"))
                 .body("ReceiveMessageResponse.ReceiveMessageResult.messages[0].MessageAttributes[0].Value.StringValue",
                         equalTo("dest-1"))
+                .body("ReceiveMessageResponse.ReceiveMessageResult.messages[0].MessageAttributes[0].Value",
+                        hasKey("BinaryListValues"))
+                .body("ReceiveMessageResponse.ReceiveMessageResult.messages[0].MessageAttributes[0].Value",
+                        hasKey("StringListValues"))
+                .body("ReceiveMessageResponse.ReceiveMessageResult.messages[0].Attributes[0].Name",
+                        equalTo("SentTimestamp"))
                 .extract().response();
         String receipt = received.path("ReceiveMessageResponse.ReceiveMessageResult.messages[0].ReceiptHandle");
 

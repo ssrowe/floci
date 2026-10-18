@@ -84,6 +84,8 @@ curl -X DELETE "http://localhost:4566/_aws/sqs/messages?QueueUrl=$QUEUE_URL"
 
 `ReceiveMessage` waits up to `WaitTimeSeconds` (0 to 20) for a message to arrive and returns as soon as one is available. Values outside that range are rejected with `InvalidParameterValue`. When the request omits `WaitTimeSeconds`, the queue's `ReceiveMessageWaitTimeSeconds` attribute applies (default `0`, short polling), matching AWS.
 
+In the query protocol, `ReceiveMessage` reads each name list under the singular or the plural name, bare or indexed, as SQS does: `MessageAttributeName`, `MessageAttributeName.1`, `MessageAttributeNames` and `MessageAttributeNames.1` all name a message attribute, and the same holds for `AttributeName` and `MessageSystemAttributeName`. A bare value is one name and is not split on commas.
+
 ```bash
 # Enable long polling for every consumer of the queue
 aws sqs set-queue-attributes \

@@ -22,6 +22,7 @@ import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -184,6 +185,24 @@ public class SqsQueryHandler {
         return values;
     }
 
+    /**
+     * A ReceiveMessage name list, which SQS reads under the singular or the plural name, bare or
+     * indexed: {@code AttributeName=All}, {@code AttributeName.1=All}, {@code AttributeNames=All}
+     * and {@code AttributeNames.1=All} all ask for every attribute. A bare value is one name, never
+     * split on commas.
+     */
+    private List<String> collectNameList(MultivaluedMap<String, String> params, String singular, String plural) {
+        List<String> values = new ArrayList<>();
+        for (String name : List.of(singular, plural)) {
+            List<String> bare = params.get(name);
+            if (bare != null) {
+                values.addAll(bare);
+            }
+            values.addAll(collectIndexed(params, name + "."));
+        }
+        return values;
+    }
+
     private Response handleCreateQueue(MultivaluedMap<String, String> params, String region) {
         String queueName = getParam(params, "QueueName");
         Map<String, String> attributes = extractAttributes(params);
@@ -323,9 +342,10 @@ public class SqsQueryHandler {
         Integer waitTimeSeconds = getOptionalIntParam(params, "WaitTimeSeconds");
 
         Set<String> requestedAttrs = new LinkedHashSet<>();
-        requestedAttrs.addAll(collectIndexed(params, "AttributeName."));
-        requestedAttrs.addAll(collectIndexed(params, "MessageSystemAttributeName."));
-        Set<String> requestedMessageAttrs = new LinkedHashSet<>(collectIndexed(params, "MessageAttributeName."));
+        requestedAttrs.addAll(collectNameList(params, "AttributeName", "AttributeNames"));
+        requestedAttrs.addAll(collectNameList(params, "MessageSystemAttributeName", "MessageSystemAttributeNames"));
+        Set<String> requestedMessageAttrs = new LinkedHashSet<>(
+                collectNameList(params, "MessageAttributeName", "MessageAttributeNames"));
 
         List<Message> messages = sqsService.receiveMessage(queueUrl, maxMessages, visibilityTimeout, waitTimeSeconds, region);
         return new ReceivedMessages(messages, requestedAttrs, requestedMessageAttrs, sqsService.senderIdFor(queueUrl));
@@ -338,7 +358,7 @@ public class SqsQueryHandler {
             Map<String, MessageAttributeValue> selectedMessageAttrs = SqsMessageAttributeSelector.select(
                     msg.getMessageAttributes(), received.requestedMessageAttrs());
             String senderId = msg.getSenderId() != null ? msg.getSenderId() : received.defaultSenderId();
-            ObjectNode systemAttrs = systemAttributesJson(msg, received.requestedAttrs(), senderId);
+            ArrayNode systemAttrs = systemAttributesJson(msg, received.requestedAttrs(), senderId);
             ObjectNode node = messages.addObject();
             node.set("Attributes", systemAttrs.isEmpty() ? JSON.nullNode() : systemAttrs);
             node.put("Body", msg.getBody());
@@ -350,13 +370,15 @@ public class SqsQueryHandler {
                 ArrayNode attrs = node.putArray("MessageAttributes");
                 for (Map.Entry<String, MessageAttributeValue> entry : selectedMessageAttrs.entrySet()) {
                     MessageAttributeValue value = entry.getValue();
-                    attrs.addObject()
+                    ObjectNode valueNode = attrs.addObject()
                             .put("Name", entry.getKey())
-                            .putObject("Value")
-                            .put("BinaryValue", value.getBinaryValue() != null
-                                    ? Base64.getEncoder().encodeToString(value.getBinaryValue()) : null)
-                            .put("DataType", value.getDataType())
-                            .put("StringValue", value.getBinaryValue() != null ? null : value.getStringValue());
+                            .putObject("Value");
+                    valueNode.putNull("BinaryListValues");
+                    valueNode.put("BinaryValue", value.getBinaryValue() != null
+                            ? Base64.getEncoder().encodeToString(value.getBinaryValue()) : null);
+                    valueNode.put("DataType", value.getDataType());
+                    valueNode.putNull("StringListValues");
+                    valueNode.put("StringValue", value.getBinaryValue() != null ? null : value.getStringValue());
                 }
             }
             node.put("MessageId", msg.getMessageId());
@@ -417,10 +439,17 @@ public class SqsQueryHandler {
     }
 
     private static Response jsonEnvelope(String action, ObjectNode result) {
+        // SQS orders every key of this form alphabetically, so ReceiveMessageResult comes before
+        // ResponseMetadata and SendMessageResult after it.
+        ObjectNode metadata = JSON.objectNode().put("RequestId", UUID.randomUUID().toString());
+        String resultName = action + "Result";
         ObjectNode response = JSON.objectNode();
-        response.putObject("ResponseMetadata").put("RequestId", UUID.randomUUID().toString());
-        if (result != null) {
-            response.set(action + "Result", result);
+        if (result != null && resultName.compareTo("ResponseMetadata") < 0) {
+            response.set(resultName, result);
+        }
+        response.set("ResponseMetadata", metadata);
+        if (result != null && resultName.compareTo("ResponseMetadata") > 0) {
+            response.set(resultName, result);
         }
         ObjectNode root = JSON.objectNode();
         root.set(action + "Response", response);
@@ -437,10 +466,12 @@ public class SqsQueryHandler {
         return Response.status(status).entity(root).type(MediaType.APPLICATION_JSON).build();
     }
 
-    private static ObjectNode systemAttributesJson(Message msg, Set<String> requested, String senderId) {
-        ObjectNode attrs = JSON.objectNode();
+    /** The requested system attributes as SQS lists them in this form: {@code [{"Name":..,"Value":..}]}. */
+    private static ArrayNode systemAttributesJson(Message msg, Set<String> requested, String senderId) {
+        Map<String, String> attrs = new LinkedHashMap<>();
+        ArrayNode list = JSON.arrayNode();
         if (requested.isEmpty()) {
-            return attrs;
+            return list;
         }
         boolean all = requested.contains("All");
         if ((all || requested.contains("SenderId")) && senderId != null) {
@@ -467,7 +498,8 @@ public class SqsQueryHandler {
         if (msg.getAwsTraceHeader() != null && (all || requested.contains("AWSTraceHeader"))) {
             attrs.put("AWSTraceHeader", msg.getAwsTraceHeader());
         }
-        return attrs;
+        attrs.forEach((name, value) -> list.addObject().put("Name", name).put("Value", value));
+        return list;
     }
 
     private Response handleChangeMessageVisibility(MultivaluedMap<String, String> params, String region) {
