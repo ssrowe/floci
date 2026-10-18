@@ -1711,7 +1711,10 @@ public class ApiGatewayExecuteController {
         // override (common for SQS query-protocol integrations) would otherwise clobber it and
         // misdirect template selection.
 
-        // Apply request parameter mapping (method.request.* → integration.request.*)
+        // Apply request parameter mapping (method.request.* → integration.request.*). The
+        // service is sent only the mapped headers and query strings, never the method request's.
+        Map<String, String> integrationHeaders = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        Map<String, String> integrationQuery = new LinkedHashMap<>();
         Map<String, String> integrationReqParams = integration.getRequestParameters();
         if (integrationReqParams != null && !integrationReqParams.isEmpty()) {
             for (Map.Entry<String, String> param : integrationReqParams.entrySet()) {
@@ -1723,8 +1726,10 @@ public class ApiGatewayExecuteController {
                 if (resolvedValue != null) {
                     if (dest.startsWith("integration.request.header.")) {
                         headerMap.put(dest.substring("integration.request.header.".length()), resolvedValue);
+                        integrationHeaders.put(dest.substring("integration.request.header.".length()), resolvedValue);
                     } else if (dest.startsWith("integration.request.querystring.")) {
                         queryMap.put(dest.substring("integration.request.querystring.".length()), resolvedValue);
+                        integrationQuery.put(dest.substring("integration.request.querystring.".length()), resolvedValue);
                     } else if (dest.startsWith("integration.request.path.")) {
                         pathMap.put(dest.substring("integration.request.path.".length()), resolvedValue);
                     }
@@ -1745,10 +1750,13 @@ public class ApiGatewayExecuteController {
         // request template body is passed directly as the Lambda payload — just like
         // AWS_PROXY, but with request/response VTL mapping applied.
         //
+        // S3 path-style integrations (arn:...:s3:path/{bucket}/{key}) are a REST call: the
+        // integration's HTTP method is the operation on the object at the path.
+        //
         // For other services: a path-style integration URI (arn:...:{service}:path/...) carries
-        // no action: the rendered template body is the AWS query protocol (form-urlencoded,
-        // "Action=SendMessage&..."). Action-style URIs (arn:...:{service}:action/{Action})
-        // carry the action in the URI and render a JSON body.
+        // no action: the AWS query protocol (form-urlencoded, "Action=SendMessage&...") comes
+        // from the rendered template body and the mapped query strings. Action-style URIs
+        // (arn:...:{service}:action/{Action}) carry the action in the URI and render a JSON body.
         Response serviceResponse;
         int serviceStatus = 500;
         String backendStatusMatchString = null;
@@ -1773,12 +1781,26 @@ public class ApiGatewayExecuteController {
                 serviceResponse = Response.status(lambdaStatus)
                         .entity(lambdaResponseBody)
                         .type(MediaType.APPLICATION_JSON).build();
+            } else if ("s3".equals(target.service()) && target.action() == null) {
+                // A rendered template is text. Without one the method request body passes
+                // through as received, which keeps a binary body intact.
+                byte[] objectBody = requestTemplateResult.rendered()
+                        ? transformedBody.getBytes(StandardCharsets.UTF_8)
+                        : (body != null ? body : new byte[0]);
+                Map<String, String> s3Headers = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+                if (requestTemplateResult.contentType() != null) {
+                    s3Headers.put("Content-Type", requestTemplateResult.contentType());
+                }
+                s3Headers.putAll(integrationHeaders);
+                serviceResponse = serviceRouter.invokeS3Path(integration.getHttpMethod(),
+                        substitutePathParams(target.path(), pathMap), objectBody, s3Headers);
             } else if (target.action() == null) {
                 MultivaluedMap<String, String> formParams = parseFormUrlEncoded(transformedBody);
+                integrationQuery.forEach((name, value) -> formParams.putIfAbsent(name, List.of(value)));
 
                 if ("sqs".equals(target.service()) && target.path() != null) {
                     formParams.computeIfAbsent("QueueUrl", (_) -> {
-                        String resourcePath = target.path();
+                        String resourcePath = substitutePathParams(target.path(), pathMap);
                         int indexOfLastSlash = resourcePath.lastIndexOf('/');
                         String queueName = indexOfLastSlash >= 0 && indexOfLastSlash < resourcePath.length() - 1
                                 ? resourcePath.substring(indexOfLastSlash + 1) : resourcePath;
@@ -1787,7 +1809,11 @@ public class ApiGatewayExecuteController {
                     });
                 }
 
-                serviceResponse = serviceRouter.invokeQuery(target.service(), formParams, region);
+                // A query-protocol service answers JSON to a request that accepts it, and an
+                // AWS integration sends Accept: application/json unless it maps another.
+                String accept = integrationHeaders.get("Accept");
+                boolean json = accept == null || accept.toLowerCase(Locale.ROOT).contains("json");
+                serviceResponse = serviceRouter.invokeQuery(target.service(), formParams, region, json);
             } else {
                 JsonNode requestJson = objectMapper.readTree(transformedBody);
                 serviceResponse = serviceRouter.invoke(target.service(), target.action(), requestJson, region);
@@ -1826,11 +1852,14 @@ public class ApiGatewayExecuteController {
             if (serviceStatus >= 400) {
                 try {
                     JsonNode errorNode = objectMapper.readTree(responseBodyStr);
+                    // The JSON form of the query protocol nests the error under "Error".
+                    JsonNode queryError = errorNode.path("Error");
                     errorType = errorNode.path("__type").asText(
-                            errorNode.path("errorType").asText(null));
+                            errorNode.path("errorType").asText(queryError.path("Code").asText(null)));
                     errorMessage = errorNode.path("message").asText(
                             errorNode.path("Message").asText(
-                                    errorNode.path("errorMessage").asText("Service error")));
+                                    errorNode.path("errorMessage").asText(
+                                            queryError.path("Message").asText("Service error"))));
                 } catch (Exception ignored) {
                     errorType = "ServiceError";
                     errorMessage = responseBodyStr;
@@ -1872,7 +1901,11 @@ public class ApiGatewayExecuteController {
      * it was rendered as, or a ready-made rejection when {@code passthroughBehavior} forbids
      * passing the payload through untransformed.
      */
-    private record RequestTemplateResult(String body, String contentType, Response rejection) {}
+    private record RequestTemplateResult(String body, String contentType, Response rejection, boolean rendered) {
+        RequestTemplateResult(String body, String contentType, Response rejection) {
+            this(body, contentType, rejection, false);
+        }
+    }
 
     /**
      * Selects a request template by the incoming {@code Content-Type} and renders it, applying
@@ -1908,7 +1941,7 @@ public class ApiGatewayExecuteController {
 
         if (template != null) {
             // The template's own key is the media type the backend should be told it is receiving.
-            return new RequestTemplateResult(vtlEngine.evaluate(template, vtlCtx).body(), matchedType, null);
+            return new RequestTemplateResult(vtlEngine.evaluate(template, vtlCtx).body(), matchedType, null, true);
         }
 
         // No matching template for this Content-Type. NEVER forbids passthrough outright;
@@ -4000,6 +4033,18 @@ public class ApiGatewayExecuteController {
         } else {
             node.put(field, value);
         }
+    }
+
+    /**
+     * Replaces each {@code {name}} in a path-style integration URI's path with the
+     * {@code integration.request.path.name} value, as AWS does before calling the service.
+     */
+    private static String substitutePathParams(String path, Map<String, String> pathParams) {
+        String resolved = path;
+        for (Map.Entry<String, String> param : pathParams.entrySet()) {
+            resolved = resolved.replace("{" + param.getKey() + "}", param.getValue());
+        }
+        return resolved;
     }
 
     /**

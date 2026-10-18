@@ -1,5 +1,8 @@
 package io.github.hectorvent.floci.services.sqs;
 
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.JsonNodeFactory;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.github.hectorvent.floci.core.common.AwsErrorMessages;
 import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.AwsNamespaces;
@@ -10,6 +13,7 @@ import io.github.hectorvent.floci.services.sqs.model.MessageAttributeValue;
 import io.github.hectorvent.floci.services.sqs.model.Queue;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
@@ -22,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * Query-protocol handler for SQS actions.
@@ -31,6 +36,7 @@ import java.util.Set;
 public class SqsQueryHandler {
 
     private static final Logger LOG = Logger.getLogger(SqsQueryHandler.class);
+    private static final JsonNodeFactory JSON = JsonNodeFactory.instance;
 
     private final SqsService sqsService;
 
@@ -52,6 +58,29 @@ public class SqsQueryHandler {
             LOG.errorv(e, "Unexpected error in SQS {0}", action);
             return AwsQueryResponse.error("InternalError",
                     "Unexpected error: " + AwsErrorMessages.describe(e), AwsNamespaces.SQS, 500);
+        }
+    }
+
+    /**
+     * Answers in the JSON form of the query protocol, which SQS returns to a request that accepts
+     * {@code application/json}, as an API Gateway AWS integration does unless it maps an
+     * {@code Accept} header. Covers the message actions a gateway route sends to a queue. Every
+     * other action answers XML.
+     */
+    public Response handleJson(String action, MultivaluedMap<String, String> params, String region) {
+        LOG.debugv("SQS action (JSON): {0}", action);
+        try {
+            return switch (action) {
+                case "SendMessage" -> sendMessageJson(params, region);
+                case "ReceiveMessage" -> receiveMessageJson(params, region);
+                case "DeleteMessage" -> deleteMessageJson(params, region);
+                default -> handle(action, params, region);
+            };
+        } catch (AwsException e) {
+            return jsonError(e.getErrorCode(), e.getMessage(), e.getHttpStatus());
+        } catch (Exception e) {
+            LOG.errorv(e, "Unexpected error in SQS {0}", action);
+            return jsonError("InternalError", "Unexpected error: " + AwsErrorMessages.describe(e), 500);
         }
     }
 
@@ -215,6 +244,35 @@ public class SqsQueryHandler {
     }
 
     private Response handleSendMessage(MultivaluedMap<String, String> params, String region) {
+        Message msg = sendMessage(params, region);
+        XmlBuilder xml = new XmlBuilder()
+                .elem("MessageId", msg.getMessageId())
+                .elem("MD5OfMessageBody", msg.getMd5OfBody());
+        if (msg.getMd5OfMessageAttributes() != null) {
+            xml.elem("MD5OfMessageAttributes", msg.getMd5OfMessageAttributes());
+        }
+        if (msg.getSequenceNumber() > 0) {
+            xml.elem("SequenceNumber", msg.getSequenceNumber());
+        }
+        return Response.ok(AwsQueryResponse.envelope("SendMessage", null, xml.build())).build();
+    }
+
+    private Response sendMessageJson(MultivaluedMap<String, String> params, String region) {
+        Message msg = sendMessage(params, region);
+        ObjectNode result = JSON.objectNode()
+                .put("MD5OfMessageAttributes", msg.getMd5OfMessageAttributes())
+                .put("MD5OfMessageBody", msg.getMd5OfBody())
+                .putNull("MD5OfMessageSystemAttributes")
+                .put("MessageId", msg.getMessageId());
+        if (msg.getSequenceNumber() > 0) {
+            result.put("SequenceNumber", String.valueOf(msg.getSequenceNumber()));
+        } else {
+            result.putNull("SequenceNumber");
+        }
+        return jsonEnvelope("SendMessage", result);
+    }
+
+    private Message sendMessage(MultivaluedMap<String, String> params, String region) {
         String queueUrl = getParam(params, "QueueUrl");
         String body = getParam(params, "MessageBody");
         Integer delaySeconds = getIntegerParam(params, "DelaySeconds");
@@ -250,23 +308,15 @@ public class SqsQueryHandler {
             }
         }
 
-        Message msg = sqsService.sendMessage(queueUrl, body, delaySeconds, messageGroupId,
+        return sqsService.sendMessage(queueUrl, body, delaySeconds, messageGroupId,
                 messageDeduplicationId, messageAttributes, awsTraceHeader,
                 sqsService.resolveCallerSenderId(queueUrl), region);
-
-        XmlBuilder xml = new XmlBuilder()
-                .elem("MessageId", msg.getMessageId())
-                .elem("MD5OfMessageBody", msg.getMd5OfBody());
-        if (msg.getMd5OfMessageAttributes() != null) {
-            xml.elem("MD5OfMessageAttributes", msg.getMd5OfMessageAttributes());
-        }
-        if (msg.getSequenceNumber() > 0) {
-            xml.elem("SequenceNumber", msg.getSequenceNumber());
-        }
-        return Response.ok(AwsQueryResponse.envelope("SendMessage", null, xml.build())).build();
     }
 
-    private Response handleReceiveMessage(MultivaluedMap<String, String> params, String region) {
+    private record ReceivedMessages(List<Message> messages, Set<String> requestedAttrs,
+                                    Set<String> requestedMessageAttrs, String defaultSenderId) {}
+
+    private ReceivedMessages receiveMessages(MultivaluedMap<String, String> params, String region) {
         String queueUrl = getParam(params, "QueueUrl");
         int maxMessages = getIntParam(params, "MaxNumberOfMessages", 1);
         int visibilityTimeout = getIntParam(params, "VisibilityTimeout", -1);
@@ -278,12 +328,51 @@ public class SqsQueryHandler {
         Set<String> requestedMessageAttrs = new LinkedHashSet<>(collectIndexed(params, "MessageAttributeName."));
 
         List<Message> messages = sqsService.receiveMessage(queueUrl, maxMessages, visibilityTimeout, waitTimeSeconds, region);
-        String defaultSenderId = sqsService.senderIdFor(queueUrl);
+        return new ReceivedMessages(messages, requestedAttrs, requestedMessageAttrs, sqsService.senderIdFor(queueUrl));
+    }
 
-        XmlBuilder xml = new XmlBuilder();
-        for (Message msg : messages) {
+    private Response receiveMessageJson(MultivaluedMap<String, String> params, String region) {
+        ReceivedMessages received = receiveMessages(params, region);
+        ArrayNode messages = JSON.arrayNode();
+        for (Message msg : received.messages()) {
             Map<String, MessageAttributeValue> selectedMessageAttrs = SqsMessageAttributeSelector.select(
-                    msg.getMessageAttributes(), requestedMessageAttrs);
+                    msg.getMessageAttributes(), received.requestedMessageAttrs());
+            String senderId = msg.getSenderId() != null ? msg.getSenderId() : received.defaultSenderId();
+            ObjectNode systemAttrs = systemAttributesJson(msg, received.requestedAttrs(), senderId);
+            ObjectNode node = messages.addObject();
+            node.set("Attributes", systemAttrs.isEmpty() ? JSON.nullNode() : systemAttrs);
+            node.put("Body", msg.getBody());
+            node.put("MD5OfBody", msg.getMd5OfBody());
+            node.put("MD5OfMessageAttributes", Message.computeMessageAttributesMd5(selectedMessageAttrs));
+            if (selectedMessageAttrs.isEmpty()) {
+                node.putNull("MessageAttributes");
+            } else {
+                ArrayNode attrs = node.putArray("MessageAttributes");
+                for (Map.Entry<String, MessageAttributeValue> entry : selectedMessageAttrs.entrySet()) {
+                    MessageAttributeValue value = entry.getValue();
+                    attrs.addObject()
+                            .put("Name", entry.getKey())
+                            .putObject("Value")
+                            .put("BinaryValue", value.getBinaryValue() != null
+                                    ? Base64.getEncoder().encodeToString(value.getBinaryValue()) : null)
+                            .put("DataType", value.getDataType())
+                            .put("StringValue", value.getBinaryValue() != null ? null : value.getStringValue());
+                }
+            }
+            node.put("MessageId", msg.getMessageId());
+            node.put("ReceiptHandle", msg.getReceiptHandle());
+        }
+        ObjectNode result = JSON.objectNode();
+        result.set("messages", messages.isEmpty() ? JSON.nullNode() : messages);
+        return jsonEnvelope("ReceiveMessage", result);
+    }
+
+    private Response handleReceiveMessage(MultivaluedMap<String, String> params, String region) {
+        ReceivedMessages received = receiveMessages(params, region);
+        XmlBuilder xml = new XmlBuilder();
+        for (Message msg : received.messages()) {
+            Map<String, MessageAttributeValue> selectedMessageAttrs = SqsMessageAttributeSelector.select(
+                    msg.getMessageAttributes(), received.requestedMessageAttrs());
             xml.start("Message")
                .elem("MessageId", msg.getMessageId())
                .elem("ReceiptHandle", msg.getReceiptHandle())
@@ -293,8 +382,8 @@ public class SqsQueryHandler {
                 xml.elem("MD5OfMessageAttributes", messageAttrsMd5);
             }
             xml.elem("Body", msg.getBody());
-            String senderId = msg.getSenderId() != null ? msg.getSenderId() : defaultSenderId;
-            writeSystemAttributesXml(xml, msg, requestedAttrs, senderId);
+            String senderId = msg.getSenderId() != null ? msg.getSenderId() : received.defaultSenderId();
+            writeSystemAttributesXml(xml, msg, received.requestedAttrs(), senderId);
             if (!selectedMessageAttrs.isEmpty()) {
                 for (Map.Entry<String, MessageAttributeValue> entry : selectedMessageAttrs.entrySet()) {
                     xml.start("MessageAttribute")
@@ -320,6 +409,65 @@ public class SqsQueryHandler {
         String receiptHandle = getParam(params, "ReceiptHandle");
         sqsService.deleteMessage(queueUrl, receiptHandle, region);
         return Response.ok(AwsQueryResponse.envelopeNoResult("DeleteMessage", null)).build();
+    }
+
+    private Response deleteMessageJson(MultivaluedMap<String, String> params, String region) {
+        sqsService.deleteMessage(getParam(params, "QueueUrl"), getParam(params, "ReceiptHandle"), region);
+        return jsonEnvelope("DeleteMessage", null);
+    }
+
+    private static Response jsonEnvelope(String action, ObjectNode result) {
+        ObjectNode response = JSON.objectNode();
+        response.putObject("ResponseMetadata").put("RequestId", UUID.randomUUID().toString());
+        if (result != null) {
+            response.set(action + "Result", result);
+        }
+        ObjectNode root = JSON.objectNode();
+        root.set(action + "Response", response);
+        return Response.ok(root, MediaType.APPLICATION_JSON).build();
+    }
+
+    private static Response jsonError(String code, String message, int status) {
+        ObjectNode root = JSON.objectNode();
+        root.putObject("Error")
+                .put("Code", code)
+                .put("Message", message)
+                .put("Type", status >= 500 ? "Receiver" : "Sender");
+        root.put("RequestId", UUID.randomUUID().toString());
+        return Response.status(status).entity(root).type(MediaType.APPLICATION_JSON).build();
+    }
+
+    private static ObjectNode systemAttributesJson(Message msg, Set<String> requested, String senderId) {
+        ObjectNode attrs = JSON.objectNode();
+        if (requested.isEmpty()) {
+            return attrs;
+        }
+        boolean all = requested.contains("All");
+        if ((all || requested.contains("SenderId")) && senderId != null) {
+            attrs.put("SenderId", senderId);
+        }
+        if (all || requested.contains("SentTimestamp")) {
+            attrs.put("SentTimestamp", String.valueOf(msg.getSentTimestamp().toEpochMilli()));
+        }
+        if (all || requested.contains("ApproximateReceiveCount")) {
+            attrs.put("ApproximateReceiveCount", String.valueOf(msg.getReceiveCount()));
+        }
+        if ((all || requested.contains("ApproximateFirstReceiveTimestamp")) && msg.getFirstReceiveTimestamp() != null) {
+            attrs.put("ApproximateFirstReceiveTimestamp", String.valueOf(msg.getFirstReceiveTimestamp().toEpochMilli()));
+        }
+        if (msg.getMessageGroupId() != null && (all || requested.contains("MessageGroupId"))) {
+            attrs.put("MessageGroupId", msg.getMessageGroupId());
+        }
+        if (msg.getSequenceNumber() > 0 && (all || requested.contains("SequenceNumber"))) {
+            attrs.put("SequenceNumber", String.valueOf(msg.getSequenceNumber()));
+        }
+        if (msg.getMessageDeduplicationId() != null && (all || requested.contains("MessageDeduplicationId"))) {
+            attrs.put("MessageDeduplicationId", msg.getMessageDeduplicationId());
+        }
+        if (msg.getAwsTraceHeader() != null && (all || requested.contains("AWSTraceHeader"))) {
+            attrs.put("AWSTraceHeader", msg.getAwsTraceHeader());
+        }
+        return attrs;
     }
 
     private Response handleChangeMessageVisibility(MultivaluedMap<String, String> params, String region) {

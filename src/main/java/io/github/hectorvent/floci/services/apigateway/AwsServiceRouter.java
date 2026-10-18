@@ -11,6 +11,9 @@ import io.github.hectorvent.floci.services.dynamodb.DynamoDbJsonHandler;
 import io.github.hectorvent.floci.services.eventbridge.EventBridgeHandler;
 import io.github.hectorvent.floci.services.kinesis.KinesisJsonHandler;
 import io.github.hectorvent.floci.services.kms.KmsJsonHandler;
+import io.github.hectorvent.floci.services.s3.S3Service;
+import io.github.hectorvent.floci.services.s3.model.PutObjectOptions;
+import io.github.hectorvent.floci.services.s3.model.S3Object;
 import io.github.hectorvent.floci.services.secretsmanager.SecretsManagerJsonHandler;
 import io.github.hectorvent.floci.services.sns.SnsJsonHandler;
 import io.github.hectorvent.floci.services.sqs.SqsJsonHandler;
@@ -23,6 +26,9 @@ import jakarta.ws.rs.core.MultivaluedMap;
 import jakarta.ws.rs.core.Response;
 import org.jboss.logging.Logger;
 
+import java.util.HashMap;
+import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 
 /**
@@ -51,6 +57,7 @@ public class AwsServiceRouter {
     private final KmsJsonHandler kmsHandler;
     private final CognitoJsonHandler cognitoHandler;
     private final AcmJsonHandler acmHandler;
+    private final S3Service s3Service;
 
     @Inject
     public AwsServiceRouter(StepFunctionsJsonHandler stepFunctionsHandler,
@@ -66,7 +73,8 @@ public class AwsServiceRouter {
                             SecretsManagerJsonHandler secretsManagerHandler,
                             KmsJsonHandler kmsHandler,
                             CognitoJsonHandler cognitoHandler,
-                            AcmJsonHandler acmHandler) {
+                            AcmJsonHandler acmHandler,
+                            S3Service s3Service) {
         this.stepFunctionsHandler = stepFunctionsHandler;
         this.dynamoDbHandler = dynamoDbHandler;
         this.sqsHandler = sqsHandler;
@@ -81,6 +89,7 @@ public class AwsServiceRouter {
         this.kmsHandler = kmsHandler;
         this.cognitoHandler = cognitoHandler;
         this.acmHandler = acmHandler;
+        this.s3Service = s3Service;
     }
 
     /**
@@ -182,9 +191,11 @@ public class AwsServiceRouter {
      * @param service the AWS service name from the URI (e.g., "sqs")
      * @param params  the parsed form parameters, including {@code Action}
      * @param region  the AWS region
-     * @return the service response (query-protocol XML)
+     * @param json    answer in the JSON form of the query protocol rather than XML
+     * @return the service response
      */
-    public Response invokeQuery(String service, MultivaluedMap<String, String> params, String region) {
+    public Response invokeQuery(String service, MultivaluedMap<String, String> params, String region,
+                                boolean json) {
         String action = params.getFirst("Action");
         LOG.debugv("AWS query integration dispatch: {0}:{1} in {2}", service, action, region);
 
@@ -195,7 +206,9 @@ public class AwsServiceRouter {
 
         try {
             return switch (service) {
-                case "sqs" -> sqsQueryHandler.handle(action, params, region);
+                case "sqs" -> json
+                        ? sqsQueryHandler.handleJson(action, params, region)
+                        : sqsQueryHandler.handle(action, params, region);
                 default -> throw new AwsException("UnknownService",
                         "Unsupported AWS query-protocol service integration: " + service, 400);
             };
@@ -205,5 +218,42 @@ public class AwsServiceRouter {
             throw new AwsException("InternalError",
                     e.getMessage() != null ? e.getMessage() : "Service invocation failed", 500);
         }
+    }
+
+    /**
+     * Dispatches an S3 {@code path/}-style integration
+     * ({@code arn:aws:apigateway:{region}:s3:path/{bucket}/{key}}). The integration's HTTP method
+     * is the S3 operation on the object the path names, and {@code headers} are the integration
+     * request headers, such as {@code Content-Type}, {@code x-amz-acl} and {@code x-amz-meta-*}.
+     */
+    public Response invokeS3Path(String httpMethod, String path, byte[] body, Map<String, String> headers) {
+        int slash = path.indexOf('/');
+        if (slash <= 0 || slash == path.length() - 1) {
+            throw new AwsException("InvalidRequest", "S3 path integration needs {bucket}/{key}: " + path, 400);
+        }
+        String bucket = path.substring(0, slash);
+        String key = path.substring(slash + 1);
+        LOG.debugv("AWS S3 path integration dispatch: {0} {1}/{2}", httpMethod, bucket, key);
+
+        if (!"PUT".equalsIgnoreCase(httpMethod)) {
+            throw new AwsException("UnknownService",
+                    "Unsupported S3 path integration method: " + httpMethod, 400);
+        }
+        Map<String, String> metadata = new HashMap<>();
+        String contentType = null;
+        String acl = null;
+        for (Map.Entry<String, String> header : headers.entrySet()) {
+            String name = header.getKey().toLowerCase(Locale.ROOT);
+            if (name.equals("content-type")) {
+                contentType = header.getValue();
+            } else if (name.equals("x-amz-acl")) {
+                acl = header.getValue();
+            } else if (name.startsWith("x-amz-meta-")) {
+                metadata.put(name.substring("x-amz-meta-".length()), header.getValue());
+            }
+        }
+        S3Object object = s3Service.putObject(bucket, key, body, contentType, metadata,
+                new PutObjectOptions().withAcl(acl));
+        return Response.ok("").header("ETag", object.getETag()).build();
     }
 }

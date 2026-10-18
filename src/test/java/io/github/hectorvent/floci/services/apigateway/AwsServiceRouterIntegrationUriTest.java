@@ -16,7 +16,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 class AwsServiceRouterIntegrationUriTest {
 
     private final AwsServiceRouter router = new AwsServiceRouter(
-            null, null, null, null, null, null, null, null, null, null, null, null, null, null);
+            null, null, null, null, null, null, null, null, null, null, null, null, null, null, null);
 
     @Test
     void parsesAnActionUri() {

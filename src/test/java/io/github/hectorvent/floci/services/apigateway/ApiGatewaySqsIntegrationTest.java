@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import static io.restassured.RestAssured.given;
 import static org.hamcrest.Matchers.containsString;
 import static org.hamcrest.Matchers.not;
+import static org.hamcrest.Matchers.notNullValue;
 
 /**
  * Integration tests for the API Gateway → SQS AWS integration using the path-style
@@ -45,16 +46,16 @@ class ApiGatewaySqsIntegrationTest {
 
     @Test
     void sqsIntegrationSendMessage() {
-        // The integration returns the SQS query-protocol XML response.
+        // The integration returns the JSON form of the SQS query-protocol response, which SQS
+        // answers to an AWS integration that maps no Accept header.
         given()
                 .contentType(ContentType.JSON)
                 .body("{\"hello\":\"world\"}")
                 .when().post("/execute-api/" + apiId + "/" + STAGE_NAME + "/send")
                 .then()
                 .statusCode(200)
-                .body(containsString("<SendMessageResponse"))
-                .body(containsString("<MessageId>"))
-                .body(containsString("<MD5OfMessageBody>"));
+                .body("SendMessageResponse.SendMessageResult.MessageId", notNullValue())
+                .body("SendMessageResponse.SendMessageResult.MD5OfMessageBody", notNullValue());
     }
 
     @Test
@@ -84,9 +85,8 @@ class ApiGatewaySqsIntegrationTest {
                 .when().post("/execute-api/" + explicitApiId + "/" + STAGE_NAME + "/send")
                 .then()
                 .statusCode(200)
-                .body(containsString("<SendMessageResponse"))
-                .body(containsString("<MessageId>"))
-                .body(containsString("<MD5OfMessageBody>"));
+                .body("SendMessageResponse.SendMessageResult.MessageId", notNullValue())
+                .body("SendMessageResponse.SendMessageResult.MD5OfMessageBody", notNullValue());
     }
 
     @Test
@@ -218,7 +218,7 @@ class ApiGatewaySqsIntegrationTest {
                         + "/methods/POST/integration")
                 .then().statusCode(201);
 
-        // Default 200 integration response (no response template — pass the SQS XML through).
+        // Default 200 integration response, with no response template, so the SQS response passes through.
         given()
                 .contentType(ContentType.JSON)
                 .body("{\"selectionPattern\":\"\"}")
