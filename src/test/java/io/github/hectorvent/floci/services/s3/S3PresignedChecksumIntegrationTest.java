@@ -36,32 +36,34 @@ class S3PresignedChecksumIntegrationTest {
             DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC);
 
     @Test
-    void presignedPutWithMismatchedChecksumCrc32InQueryFailsWith400BadDigest() throws Exception {
+    void presignedPutWithEmptyPayloadCrc32InQueryIsAcceptedAndStoresTheComputedChecksum() throws Exception {
         createBucket();
-        String path = "/" + BUCKET + "/mismatched-crc32.txt";
-        // SDK JS v3 presigner ký CRC32 của empty payload (AAAAAA==) khi chưa có body tại thời điểm ký
+        String path = "/" + BUCKET + "/empty-payload-crc32.txt";
+        // The JS SDK v3 presigner signs the CRC32 of an empty body (AAAAAA==) into every PutObject
+        // URL. S3 accepts the real upload through that URL and keeps the checksum of what it stored.
         String emptyPayloadCrc32 = S3Checksum.crc32Base64(new byte[0]);
         String url = presign("PUT", path, Map.of("x-amz-checksum-crc32", emptyPayloadCrc32), Map.of());
 
         byte[] body = "not an empty body".getBytes(StandardCharsets.UTF_8);
+        String bodyCrc32 = S3Checksum.crc32Base64(body);
         given()
             .urlEncodingEnabled(false)
             .body(body)
         .when()
             .put(url)
         .then()
-            .statusCode(400)
-            .body(containsString("BadDigest"))
-            .body(containsString("The CRC32 you specified did not match the calculated checksum."));
+            .statusCode(200)
+            .header("x-amz-checksum-crc32", equalTo(bodyCrc32));
 
-        // Xác nhận object không được lưu vào storage
         given()
             .filter(LOCAL_SIGNER)
+            .header("x-amz-checksum-mode", "ENABLED")
         .when()
             .get(path)
         .then()
-            .statusCode(404)
-            .body(containsString("NoSuchKey"));
+            .statusCode(200)
+            .header("x-amz-checksum-crc32", equalTo(bodyCrc32))
+            .body(equalTo(new String(body, StandardCharsets.UTF_8)));
     }
 
     @Test
@@ -123,21 +125,21 @@ class S3PresignedChecksumIntegrationTest {
     }
 
     @Test
-    void presignedPutWithMismatchedSha256InQueryFailsWith400BadDigest() throws Exception {
+    void presignedPutWithMismatchedSha256InQueryIsAcceptedAndStoresTheComputedChecksum() throws Exception {
         createBucket();
         String path = "/" + BUCKET + "/mismatched-sha256.txt";
-        String invalidSha256 = S3Checksum.sha256Base64("other content".getBytes(StandardCharsets.UTF_8));
-        String url = presign("PUT", path, Map.of("x-amz-checksum-sha256", invalidSha256), Map.of());
+        String otherSha256 = S3Checksum.sha256Base64("other content".getBytes(StandardCharsets.UTF_8));
+        String url = presign("PUT", path, Map.of("x-amz-checksum-sha256", otherSha256), Map.of());
 
+        byte[] body = "real content".getBytes(StandardCharsets.UTF_8);
         given()
             .urlEncodingEnabled(false)
-            .body("real content".getBytes(StandardCharsets.UTF_8))
+            .body(body)
         .when()
             .put(url)
         .then()
-            .statusCode(400)
-            .body(containsString("BadDigest"))
-            .body(containsString("The SHA256 you specified did not match the calculated checksum."));
+            .statusCode(200)
+            .header("x-amz-checksum-sha256", equalTo(S3Checksum.sha256Base64(body)));
     }
 
     @Test
