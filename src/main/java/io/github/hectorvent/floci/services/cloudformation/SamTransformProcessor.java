@@ -1477,6 +1477,7 @@ class SamTransformProcessor {
         copyIfPresent(properties, "EphemeralStorage", lambdaProps);
         copyIfPresent(properties, "VpcConfig", lambdaProps);
         copyIfPresent(properties, "FileSystemConfigs", lambdaProps);
+        copyIfPresent(properties, "LoggingConfig", lambdaProps);
 
         JsonNode tracing = properties.path("Tracing");
         if (!tracing.isMissingNode()) {

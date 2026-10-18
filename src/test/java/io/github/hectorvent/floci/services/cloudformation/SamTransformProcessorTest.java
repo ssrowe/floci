@@ -323,6 +323,48 @@ class SamTransformProcessorTest {
     }
 
     @Test
+    void expandSamTemplate_functionWithLoggingConfig() throws Exception {
+        JsonNode template = objectMapper.readTree("""
+            {
+              "Transform": "AWS::Serverless-2016-10-31",
+              "Globals": {
+                "Function": {
+                  "LoggingConfig": {"LogGroup": {"Ref": "SharedLogs"}, "LogFormat": "JSON"}
+                }
+              },
+              "Resources": {
+                "SharedLogs": {"Type": "AWS::Logs::LogGroup"},
+                "FromGlobals": {
+                  "Type": "AWS::Serverless::Function",
+                  "Properties": {
+                    "Handler": "index.handler",
+                    "Runtime": "nodejs20.x",
+                    "InlineCode": "exports.handler = async () => ({});"
+                  }
+                },
+                "OwnConfig": {
+                  "Type": "AWS::Serverless::Function",
+                  "Properties": {
+                    "Handler": "index.handler",
+                    "Runtime": "nodejs20.x",
+                    "InlineCode": "exports.handler = async () => ({});",
+                    "LoggingConfig": {"LogGroup": "/custom/own"}
+                  }
+                }
+              }
+            }
+            """);
+
+        JsonNode resources = processor.expandSamTemplate(template).path("Resources");
+
+        JsonNode fromGlobals = resources.path("FromGlobals").path("Properties").path("LoggingConfig");
+        assertEquals("SharedLogs", fromGlobals.path("LogGroup").path("Ref").asText());
+        assertEquals("JSON", fromGlobals.path("LogFormat").asText());
+        assertEquals("/custom/own",
+                resources.path("OwnConfig").path("Properties").path("LoggingConfig").path("LogGroup").asText());
+    }
+
+    @Test
     void expandSamTemplate_functionWithImageConfig() throws Exception {
         // ImageConfig (EntryPoint/Command/WorkingDirectory overrides for a container-image
         // function) must also be carried through: LambdaCfnProvisioner
