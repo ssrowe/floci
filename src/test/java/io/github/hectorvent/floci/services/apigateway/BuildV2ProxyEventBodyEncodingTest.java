@@ -70,7 +70,8 @@ class BuildV2ProxyEventBodyEncodingTest {
 
         JsonNode event = objectMapper.readTree(json);
         if (expectedBody == null) {
-            assertTrue(event.path("body").isNull());
+            // API Gateway leaves body out of an HTTP API v2 event that carries no payload.
+            assertTrue(event.path("body").isMissingNode());
         } else {
             assertEquals(expectedBody, event.path("body").asText());
         }
