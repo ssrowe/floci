@@ -59,7 +59,7 @@ import java.util.regex.Pattern;
  * documents differ in content beyond that is not known; see the open questions in
  * {@code docs/configuration/partitions.md}.
  */
-final class AwsManagedPolicies {
+public final class AwsManagedPolicies {
 
     private static final Logger LOG = Logger.getLogger(AwsManagedPolicies.class);
 
@@ -125,6 +125,11 @@ final class AwsManagedPolicies {
      *
      * @throws IllegalArgumentException when {@code partition} is not a published partition id
      */
+    /** The catalog path of an AWS managed policy by bare name, such as "/service-role/", or null when unknown. */
+    public static String pathOf(String name) {
+        return forPartition("aws").stream().filter(p -> p.name().equals(name)).map(ManagedPolicyDef::path).findFirst().orElse(null);
+    }
+
     static List<ManagedPolicyDef> forPartition(String partition) {
         if (COMMERCIAL_PARTITION.equals(partition)) {
             return POLICIES;

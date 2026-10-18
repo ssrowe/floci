@@ -253,6 +253,28 @@ class SamTransformProcessor {
         return routes;
     }
 
+    /**
+     * SAM accepts an AWS managed policy by bare name and resolves it to the policy ARN. The basic
+     * execution role is already attached, so naming it again adds nothing.
+     */
+    private void addManagedPolicy(ArrayNode managedPolicies, String policy) {
+        if (policy.startsWith("arn:")) {
+            managedPolicies.add(policy);
+            return;
+        }
+        if ("AWSLambdaBasicExecutionRole".equals(policy)) {
+            return;
+        }
+        String path = io.github.hectorvent.floci.services.iam.AwsManagedPolicies.pathOf(policy);
+        if (path == null) {
+            managedPolicies.add(policy);
+            return;
+        }
+        ObjectNode arn = objectMapper.createObjectNode();
+        arn.put("Fn::Sub", "arn:${AWS::Partition}:iam::aws:policy" + path + policy);
+        managedPolicies.add(arn);
+    }
+
     private void expandServerlessHttpApi(String logicalId, JsonNode properties,
                                          List<HttpApiRoute> allRoutes, ObjectNode resources) {
         resources.remove(logicalId);
@@ -1404,11 +1426,11 @@ class SamTransformProcessor {
         if (userPolicies.isArray()) {
             for (JsonNode policy : userPolicies) {
                 if (policy.isTextual()) {
-                    managedPolicies.add(policy.asText());
+                    addManagedPolicy(managedPolicies, policy.asText());
                 }
             }
         } else if (userPolicies.isTextual()) {
-            managedPolicies.add(userPolicies.asText());
+            addManagedPolicy(managedPolicies, userPolicies.asText());
         }
         roleProps.set("ManagedPolicyArns", managedPolicies);
         if (!inlinePolicies.isEmpty()) {
