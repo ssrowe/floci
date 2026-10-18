@@ -3623,7 +3623,7 @@ public class ApiGatewayExecuteController {
                     : Base64.getEncoder().encodeToString(body));
             event.put("isBase64Encoded", !isText);
         } else {
-            event.putNull("body");
+            // API Gateway omits body on a v2 event with no payload, and null fails strict consumers.
             event.put("isBase64Encoded", false);
         }
 
