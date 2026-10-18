@@ -264,6 +264,14 @@ class SamTransformProcessor {
         apiProps.set("Name", !name.isMissingNode() ? name.deepCopy() : objectMapper.getNodeFactory().textNode(logicalId));
         apiProps.put("ProtocolType", "HTTP");
         copyIfPresent(properties, "Description", apiProps);
+        JsonNode cors = properties.path("CorsConfiguration");
+        if (cors.isObject()) {
+            apiProps.set("CorsConfiguration", cors.deepCopy());
+        } else if (cors.isBoolean() && cors.asBoolean()) {
+            ObjectNode allowAll = objectMapper.createObjectNode();
+            allowAll.putArray("AllowOrigins").add("*");
+            apiProps.set("CorsConfiguration", allowAll);
+        }
 
         // Preserve inline OpenAPI route definitions so the ApiGatewayV2 provisioner can
         // materialize the routes and integrations declared by SAM DefinitionBody. An HttpApi
