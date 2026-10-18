@@ -16,7 +16,7 @@ concurrency:
 
 env:
   IMAGE: ghcr.io/ssrowe/floci
-  VERSION: 2.3.0-cw.4
+  VERSION: 2.3.0-cw.5
 
 jobs:
   native:
