@@ -154,6 +154,7 @@ public class AwsJsonController {
                 case "verifiedpermissions" -> verifiedPermissionsJsonHandler.handle(action, request, region);
                 case "bcm-pricing-calculator" -> bcmPricingCalculatorJsonHandler.handle(action, request, region);
                 case "timestream-influxdb" -> timestreamInfluxDbJsonHandler.handle(action, request, region);
+                case "sms-voice" -> smsVoiceResponse(action, request);
                 default -> null;
             };
             // catalog.matchTarget is protocol-agnostic: a JSON 1.1 target
@@ -178,5 +179,20 @@ public class AwsJsonController {
             return DynamoDbResponses.withCrc32(response, objectMapper);
         }
         return response;
+    }
+
+    /**
+     * Pinpoint SMS Voice v2 accepts SendTextMessage and logs it. Nothing is delivered, so local
+     * code that texts a user succeeds and leaves the message in the Floci log.
+     */
+    private Response smsVoiceResponse(String action, JsonNode request) {
+        if (!"SendTextMessage".equals(action)) {
+            return null;
+        }
+        String messageId = java.util.UUID.randomUUID().toString();
+        LOG.infov("SMS not delivered, to {0} from {1}, MessageId {2}: {3}",
+                request.path("DestinationPhoneNumber").asText(), request.path("OriginationIdentity").asText(),
+                messageId, request.path("MessageBody").asText());
+        return Response.ok(objectMapper.createObjectNode().put("MessageId", messageId).toString()).build();
     }
 }
