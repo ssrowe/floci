@@ -1,3 +1,5 @@
+> **Fork of [floci-io/floci](https://github.com/floci-io/floci) 2.3.0** with fixes for API Gateway HTTP API events, VTL and CORS, the SAM transform (HttpApi CORS, managed policy names, state machine roles) and Pinpoint SMS v2 `SendTextMessage`. Image: `ghcr.io/ssrowe/floci`.
+
 <p align="center">
   <img src="docs/assets/floci-black.svg#gh-light-mode-only" alt="Floci" width="500" />
   <img src="docs/assets/floci-white.svg#gh-dark-mode-only" alt="Floci" width="500" />
