@@ -1,4 +1,4 @@
-> **Fork of [floci-io/floci](https://github.com/floci-io/floci) 2.3.0** with fixes for API Gateway HTTP API events, REST request authorizer events, VTL and CORS, the SAM transform (HttpApi CORS, managed policy names, state machine roles), presigned S3 PutObject checksums and Pinpoint SMS v2 `SendTextMessage`. Image: `ghcr.io/ssrowe/floci`.
+> **Fork of [floci-io/floci](https://github.com/floci-io/floci) 2.3.0** with fixes for API Gateway HTTP API events, REST request authorizer events, REST path-style S3 and SQS integrations, VTL and CORS, the SAM transform (HttpApi CORS, managed policy names, state machine roles), presigned S3 PutObject checksums, Lambda `LoggingConfig` log groups and Pinpoint SMS v2 `SendTextMessage`. Image: `ghcr.io/ssrowe/floci`.
 
 <p align="center">
   <img src="docs/assets/floci-black.svg#gh-light-mode-only" alt="Floci" width="500" />
